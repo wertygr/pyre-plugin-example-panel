@@ -1,0 +1,7 @@
+{
+    "name": "_panel_",
+    "title": "Panel",
+    "description": "Tkinter panel in a separate thread: displays REPL status; requires an async branch",
+    "tags": ["gui", "async", "threading"],
+    "config": {"file": "panel/__init__.py", "cache": true, "api": true}
+}
