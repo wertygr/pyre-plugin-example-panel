@@ -1,4 +1,6 @@
+import gc
 import linecache
+import queue
 import sys
 import threading
 
@@ -6,8 +8,7 @@ from plugins.plugin_tools.plugin_types import PluginApi, PluginData
 import customtkinter as ctk
 
 ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
-
+ctk.set_default_color_theme("dark-blue")
 ACCENT = "#a83232"
 ACCENT_HOVER = "#7a2222"
 OK = "#2b7a3d"
@@ -25,42 +26,20 @@ def _tree_mod(name: str) -> dict:
     return tree
 
 class App:
-    def __init__(self, api: PluginApi):
+    def __init__(self, root: ctk.CTk, api: PluginApi, host: "_PersistentUIHost"):
+        self.root = root
         self.api = api
+        self.host = host
         self.data: PluginData = api["data"]
-        self.alive = True
-        self.ready = threading.Event()
-        self.closed = threading.Event()
         self.expanded: set[str] = set()
 
-        self.root = ctk.CTk()
         self.root.title("panel")
         self.root.geometry("780x520")
-        self.root.protocol("WM_DELETE_WINDOW", self.destroy)
-
         self._build_ui()
-        self._watch_alive()
-        self.ready.set()
 
-    def _watch_alive(self) -> None:
-        """Tk-thread poller: Tk calls from other threads are rejected, so closing is done here."""
-        if not self.alive:
-            self.destroy()
-            return
-        try:
-            self.root.after(50, self._watch_alive)
-        except Exception:
-            pass
-
-    def run(self) -> None:
-        """Blocking Tk mainloop; must be called from the thread that built widgets."""
-        try:
-            self.root.mainloop()
-        except Exception:
-            pass
-        finally:
-            self.alive = False
-            self.closed.set()
+    @property
+    def alive(self) -> bool:
+        return self.host.alive
 
     # ------------------------------------------------------------------ ui
 
@@ -382,16 +361,79 @@ class App:
         self.root.wait_window(dialog)
         return result
 
-    def shutdown(self) -> None:
-        """Safe from any thread and non-blocking: `_watch_alive` closes the window in the Tk thread."""
+class _PersistentUIHost:
+    def __init__(self):
+        self.cmd_q: queue.Queue = queue.Queue()
+        self.ready = threading.Event()
+        self.root: ctk.CTk | None = None
+        self.current_app: App | None = None
         self.alive = False
 
-    def destroy(self):
+        self.thread = threading.Thread(
+            target=self._run_loop, name="pyre-tk-host", daemon=True
+        )
+        self.thread.start()
+        self.ready.wait()
+
+    def _run_loop(self):
+        self.root = ctk.CTk()
+        self.root.withdraw()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.after(30, self._poll_queue)
+        self.ready.set()
+        self.root.mainloop()
+
+    def _on_close(self):
         self.alive = False
+        self._clear_children()
+        if self.root is not None:
+            self.root.withdraw()
+
+    def _clear_children(self):
+        if self.root is None:
+            return
+        for child in list(self.root.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        if self.current_app is not None:
+            self.current_app.__dict__.clear()
+            self.current_app = None
+        gc.collect()
+
+    def _poll_queue(self):
         try:
-            self.root.quit()
-            self.root.destroy()
-        except Exception:
+            while True:
+                cmd, payload = self.cmd_q.get_nowait()
+                if cmd == "mount":
+                    self._clear_children()
+                    app_cls, api, mounted = payload
+                    self.current_app = app_cls(self.root, api, self)
+                    self.alive = True
+                    self.root.deiconify()
+                    self.root.lift()
+                    if mounted is not None:
+                        mounted.set()
+                elif cmd == "reset":
+                    done_event = payload
+                    self._on_close()
+                    if done_event is not None:
+                        done_event.set()
+        except queue.Empty:
             pass
         finally:
-            self.closed.set()
+            if self.root is not None:
+                self.root.after(30, self._poll_queue)
+
+    def mount(self, app_cls, api: PluginApi) -> None:
+        mounted = threading.Event()
+        self.cmd_q.put(("mount", (app_cls, api, mounted)))
+        if threading.current_thread() is not self.thread:
+            mounted.wait(timeout=2.0)
+    def shutdown(self):
+        self.alive = False
+        done = threading.Event()
+        self.cmd_q.put(("reset", done))
+        if threading.current_thread() is not self.thread:
+            done.wait(timeout=2.0)

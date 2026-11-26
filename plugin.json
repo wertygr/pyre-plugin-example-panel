@@ -3,5 +3,7 @@
     "title": "Panel",
     "description": "Tkinter panel in a separate thread: displays REPL status; requires an async branch",
     "tags": ["gui", "async", "threading"],
+    "blacklist": ["*pyc", "__pycache__", ".git"],
+    "src": ["panel"],
     "config": {"file": "panel/__init__.py", "cache": true, "api": true}
 }

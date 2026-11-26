@@ -1,50 +1,35 @@
-from plugins.plugin_tools.meta import SUPPORTED_ASYNC_PLUGINS
+import sys
 
-if not SUPPORTED_ASYNC_PLUGINS:
-    raise ValueError("the plugin loader does not support asynchrony")
+from plugins.plugin_tools.lib.base import base_destructor
 
 import asyncio
-from .app import App
-import threading
+from .app import App, _PersistentUIHost
 
 from plugins.plugin_tools.plugin_types import PluginApi, CommandContext, PluginData
 
 PLUGIN_NAME = "_panel_"
 
-def _start_app(api: PluginApi, state: dict) -> "App":
-    """Create and run the window entirely inside one dedicated thread: tkinter is not thread-safe."""
-    holder: dict = {}
-    ready = threading.Event()
+def _get_host() -> _PersistentUIHost:
+    host = getattr(sys, "_pyre_ctk_host", None)
+    if host is None or not hasattr(host, "cmd_q"):
+        host = _PersistentUIHost()
+        sys._pyre_ctk_host = host
+    return host
 
-    def target():
-        try:
-            app = App(api)
-            holder["app"] = app
-            ready.set()
-            app.run()
-        except Exception:
-            if not ready.is_set():
-                ready.set()
-
-    thread = threading.Thread(target=target, name="pyre-panel", daemon=True)
-    thread.start()
-    ready.wait()
-    app = holder.get("app")
-    state["app"] = app
-    state["thread"] = thread
-    return app
+def _start_app(api: PluginApi, state: dict) -> _PersistentUIHost:
+    host = _get_host()
+    host.mount(App, api)
+    state["app"] = host
+    return host
 
 
 def main(api: PluginApi, command_context: CommandContext, plugin_space: dict) -> None:
     data: PluginData = api["data"]
-    if command_context["argv"][0] == "_._":
-        return
     state = plugin_space.setdefault(PLUGIN_NAME, {})
     app: App|None = state.get("app")
     if app is None or not app.alive:
         app = _start_app(api, state)
     api["pft"]("[panel]: window is open", data)
-
 
 async def async_main(api: PluginApi, plugin_space: dict) -> None:
     state = plugin_space.setdefault(PLUGIN_NAME, {})
@@ -70,9 +55,16 @@ async def async_main(api: PluginApi, plugin_space: dict) -> None:
             state["app"] = None
             state["thread"] = None
 
-
 def destructor(plugin_space: dict) -> None:
     state = plugin_space.pop(PLUGIN_NAME, None)
-    app: App|None = state.get("app") if isinstance(state, dict) else None
-    if app is not None:
-        app.shutdown()
+    host = None
+    if isinstance(state, dict):
+        host = state.get("app") or state.get("host")
+
+    if host is None:
+        host = getattr(sys, "_pyre_ctk_host", None)
+
+    if host is not None and hasattr(host, "shutdown"):
+        host.shutdown()
+
+    base_destructor(__package__)
