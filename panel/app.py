@@ -5,6 +5,7 @@ import sys
 import threading
 
 from plugins.plugin_tools.plugin_types import PluginApi, PluginData
+from plugins.plugin_tools.meta import MagicFunction, fn_convert
 import customtkinter as ctk
 
 ctk.set_appearance_mode("dark")
@@ -192,7 +193,7 @@ class App:
 
         row = 1
         for name in sorted(self.data.plugin_list):
-            module = self.data.repl_mode.get(name)
+            module = sys.modules.get(name)
             funcs = self._plugin_funcs(module)
             space = self.data.plugin_space.get(name)
 
@@ -221,9 +222,9 @@ class App:
         if module is None:
             return "not loaded"
         found = []
-        for func in ("main", "async_main", "hook_run", "destructor"):
-            if hasattr(module, func):
-                found.append(func)
+        for fn in MagicFunction:
+            if hasattr(module, fn.fn_name) and fn.fn_type.is_i(getattr(module, fn.fn_name)):
+                found.append(fn.fn_name)
         return ", ".join(found) or "no entry points"
 
     def _async_status(self) -> dict:
